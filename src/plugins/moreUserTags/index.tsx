@@ -318,7 +318,7 @@ export default definePlugin({
     }: {
         message?: Message,
         user: User & { isClyde(): boolean; },
-        channel?: Channel & { isForumPost(): boolean; isMediaPost(): boolean; },
+        channel?: Channel & { isForumPost(): boolean; isMediaPost(): boolean; isThread(): boolean },
         channelId?: string;
         origType?: number;
         location: "chat" | "not-chat";
@@ -350,6 +350,10 @@ export default definePlugin({
                 (location === "chat" && !settings.tagSettings.OWNER.showInChat) ||
                 (location === "not-chat" && !settings.tagSettings.OWNER.showInNotChat)
             ) continue;
+
+            if (channel.isThread() && channel.ownerId === user.id) {
+                type = Tag.Types.ORIGINAL_POSTER;
+            }
 
             if (
                 tag.permissions?.some(perm => perms.includes(perm)) ||
