@@ -49,6 +49,7 @@ interface TagSettings {
     MODERATOR: TagSetting,
     VOICE_MODERATOR: TagSetting,
     TRIAL_MODERATOR: TagSetting,
+    THREAD_MODERATOR: TagSetting,
     [k: string]: TagSetting;
 }
 
@@ -101,8 +102,18 @@ const tags: Tag[] = [
         displayName: "Chat Mod",
         description: "Can timeout people",
         permissions: ["MODERATE_MEMBERS"]
+    }, {
+        name: "THREAD_MODERATOR",
+        displayName: "THMod",
+        description: "Has the 'Manage Threads' permission",
+        permissions: ["MANAGE_THREADS"],
+        condition: (_, user, channel) => {
+            const perms = computePermissions({ user, context: channel });
+            return (perms & PermissionsBits.MANAGE_THREADS) !== 0n;
+        }
     }
 ];
+
 const defaultSettings = Object.fromEntries(
     tags.map(({ name, displayName }) => [name, { text: displayName, showInChat: true, showInNotChat: true }])
 ) as TagSettings;
@@ -113,7 +124,7 @@ function SettingsComponent() {
     return (
         <Flex flexDirection="column">
             {tags.map(t => (
-                <Card style={{ padding: "1em 1em 0" }}>
+                <Card style={{ padding: "1em 1em 0" }} key={t.name}>
                     <Forms.FormTitle style={{ width: "fit-content" }}>
                         <Tooltip text={t.description}>
                             {({ onMouseEnter, onMouseLeave }) => (
@@ -131,13 +142,19 @@ function SettingsComponent() {
                         type="text"
                         value={tagSettings[t.name]?.text ?? t.displayName}
                         placeholder={`Text on tag (default: ${t.displayName})`}
-                        onChange={v => tagSettings[t.name].text = v}
+                        onChange={v => tagSettings[t.name] = {
+                            ...tagSettings[t.name],
+                            text: v
+                        }}
                         className={Margins.bottom16}
                     />
 
                     <Switch
                         value={tagSettings[t.name]?.showInChat ?? true}
-                        onChange={v => tagSettings[t.name].showInChat = v}
+                        onChange={v => tagSettings[t.name] = {
+                            ...tagSettings[t.name],
+                            showInChat: v
+                        }}
                         hideBorder
                     >
                         Show in messages
@@ -145,7 +162,10 @@ function SettingsComponent() {
 
                     <Switch
                         value={tagSettings[t.name]?.showInNotChat ?? true}
-                        onChange={v => tagSettings[t.name].showInNotChat = v}
+                        onChange={v => tagSettings[t.name] = {
+                            ...tagSettings[t.name],
+                            showInNotChat: v
+                        }}
                         hideBorder
                     >
                         Show in member list and profiles
@@ -244,8 +264,6 @@ export default definePlugin({
             group: true,
             replacement: [
                 {
-                    // prevent channel id from getting ghosted
-                    // it's either this or extremely long lookbehind
                     match: /user:\i,nick:\i,/,
                     replace: "$&moreTags_channelId,"
                 }, {
@@ -265,6 +283,15 @@ export default definePlugin({
             showInChat: true,
             showInNotChat: true
         };
+
+        // Ensure all tags have proper settings initialized
+        tags.forEach(tag => {
+            settings.store.tagSettings[tag.name] ??= {
+                text: tag.displayName,
+                showInChat: true,
+                showInNotChat: true
+            };
+        });
     },
 
     getPermissions(user: User, channel: Channel): string[] {
@@ -301,6 +328,10 @@ export default definePlugin({
         const tag = tags.find(({ name }) => tagName === name);
         if (!tag) return strings.APP_TAG;
         if (variant === "BOT" && tagName !== "WEBHOOK" && this.settings.store.dontShowForBots) return strings.APP_TAG;
+
+        if (tagName === "THREAD_MODERATOR") {
+            return "THMod";
+        }
 
         const tagText = settings.store.tagSettings?.[tag.name]?.text || tag.displayName;
         switch (variant) {
@@ -339,32 +370,22 @@ export default definePlugin({
         const perms = this.getPermissions(user, channel);
 
         for (const tag of tags) {
-            if (location === "chat" && !settings.tagSettings[tag.name].showInChat) continue;
-            if (location === "not-chat" && !settings.tagSettings[tag.name].showInNotChat) continue;
+            const tagSettings = settings.tagSettings?.[tag.name] || defaultSettings[tag.name]; // Ensure fallback
 
-            // If the owner tag is disabled, and the user is the owner of the guild,
-            // avoid adding other tags because the owner will always match the condition for them
-            if (
-                tag.name !== "OWNER" &&
-                GuildStore.getGuild(channel?.guild_id)?.ownerId === user.id &&
-                (location === "chat" && !settings.tagSettings.OWNER.showInChat) ||
-                (location === "not-chat" && !settings.tagSettings.OWNER.showInNotChat)
-            ) continue;
+            if (location === "chat" && !tagSettings.showInChat) continue;
+            if (location === "not-chat" && !tagSettings.showInNotChat) continue;
 
-            if (channel.isThread() && channel.ownerId === user.id) {
+            // Ensure only OP tag is assigned, not Thread Mod
+            if (channel.isThread() && channel.ownerId === user.id && tag.name === "OWNER") {
                 type = Tag.Types.ORIGINAL_POSTER;
+                continue;
             }
 
             if (
                 tag.permissions?.some(perm => perms.includes(perm)) ||
                 (tag.condition?.(message!, user, channel))
             ) {
-                if ((channel.isForumPost() || channel.isMediaPost()) && channel.ownerId === user.id)
-                    type = Tag.Types[`${tag.name}-OP`];
-                else if (user.bot && !isWebhook(message!, user) && !settings.dontShowBotTag)
-                    type = Tag.Types[`${tag.name}-BOT`];
-                else
-                    type = Tag.Types[tag.name];
+                type = Tag.Types[tag.name];
                 break;
             }
         }
